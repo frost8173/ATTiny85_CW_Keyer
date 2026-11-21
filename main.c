@@ -22,7 +22,7 @@
  You should have received a copy of the GNU General Public License
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  
- @version   0.87
+ @version   0.88
  
  @date      15.10.2010  - Created
  @date      16.12.2010  - Submitted to SVN
@@ -41,8 +41,12 @@
 						  Changed Farnsworth setting mode to play continuous DIT-DAH when not holding paddle to adjust, like Pitch command
 						  Changed Version command to return to command mode instead of normal mode if interrupted with command key
 						  Changed speed inquiry command to return to command mode instead of normal mode if interrupted with command key
- */ 
+ @date      21.11.2026  - Changed yackbeat delay loop from 5 to 1 ms, as 5 ms per delay loop meant the actual sending speed obtainable were quite limited in the 
+ 			  higher speeds. E.g. when starting at 15 wpm and increasing speed would yield the following speeds: 
+			  15, 16, 17, 18.5, 20, 22, 24, 27, 30, 34, 40, 48...
+ 			- Support for speed potentiometer on the PB2 pin, if POTSPEED is defined. See yackpot(), called from yackbeat() once every 40 times
 
+ */ 
 
 #ifndef F_CPU
 #error F_CPU undefined!! Please define in Makefile
@@ -60,9 +64,9 @@
 
 // Some texts in Flash used by the application
 const char  txok[] PROGMEM 		= "R";
-const char  vers[] PROGMEM      = "V0.87";
+const char  vers[] PROGMEM		= "V0.88";
 const char  prgx[] PROGMEM 		= "#"; // # decodes to prosign SK with no intercharacter gap
-const char  imok[] PROGMEM		= "73";
+const char  imok[] PROGMEM		= "OK";
 
 void pitch(void)
 /*! 
@@ -574,7 +578,7 @@ int main(void)
  @brief     Trivial main routine
  
  Yack library is initialized, command mode is entered on request and both 
- beacon and keyer routines are called in 10 ms intervals.
+ beacon and keyer routines are called in YACKBEAT milliseconds intervals.
  
  @return Not relevant
 */
@@ -592,10 +596,9 @@ int main(void)
 		if (yackctrlkey(TRUE)) // If command key pressed, go to command mode
 			commandmode();
 		
-       	yackbeat();
-		beacon(PLAY); // Play beacon if requested
+       	yackbeat(); // Heartbeat, lasting YACKBEAT milliseconds
+	beacon(PLAY); // Play beacon if requested
        	yackiambic(OFF);
-        
 	}
 	
 	return 0;

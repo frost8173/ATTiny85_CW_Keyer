@@ -4,7 +4,7 @@
  @brief     CW Keyer library
  @author    Jan Lategahn DK3LJ jan@lategahn.com (C) 2011; modified by Jack Welch AI4SV; modified by Don Froula WD9DMP
  
- @version   0.87
+ @version   0.88
  
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -26,7 +26,10 @@
                           Memory playback halts immediately on command key instead of looping through message length without playing anything.
 						  Removed playback of recorded message before saving.
 						  Changed yackstring command to return to command mode instead of normal mode if interrupted with command key
- 
+ @date      21.11.2026  - Changed yackbeat delay loop from 5 to 1 ms, as 5 ms per delay loop meant the actual sending speed obtainable were quite limited in the 
+ 			  higher speeds. E.g. when starting at 15 wpm and increasing speed would yield the following speeds: 
+			  15, 16, 17, 18.5, 20, 22, 24, 27, 30, 34, 40, 48...
+ 			- Support for speed potentiometer on the PB2 pin, if POTSPEED is defined. See yackpot(), called from yackbeat() once every 40 times
  @todo      Make the delay dependent on T/C 1 
 
 */ 
@@ -45,6 +48,9 @@
 static      void key( byte mode); 
 static      char morsechar(byte buffer);
 static      void keylatch(void);
+#ifdef POTSPEED
+static      void yackpot(void);
+#endif
 
 // Enumerations
 
@@ -62,6 +68,9 @@ static 		word	ctcvalue;		// Pitch
 static		word	wpmcnt;			// Speed
 static      byte    wpm;            // Real wpm
 static      byte    farnsworth;     // Additional Farnsworth pause
+#ifdef POTSPEED
+static      byte    potwpm = 0;     // Speed set by the potentiometer, 0 = no valid potentiometer
+#endif
 
 // EEPROM Data
 
@@ -245,13 +254,17 @@ void yackinit (void)
 #endif
     
     // Initialize timer1 to serve as the system heartbeat
-    // CK runs at 1MHz. Prescaling by 64 makes that 15625 Hz.
-    // Counting 78 cycles of that generates an overflow every 5ms
-    
-    OCR1C = 78; // 77 counts per cycle
-    TCCR1 |= (1<<CTC1) | 0b00000111 ; // Clear Timer on match, prescale ck by 64
+    // CK runs at 1MHz. Prescaling by 8 makes that 125 kHz, one tick is 8 us.
+    // The counter runs from 0 to OCR1C, so one beat is OCR1C+1 ticks (125 ticks = 1 ms)
+
+    OCR1C = BEATTICKS - 1; // Beat length in ticks, minus 1
+    TCCR1 |= (1<<CTC1) | T1PRESCALE ; // Clear Timer on match, prescale ck by 8
     OCR1A = 1; // CTC mode does not create an overflow so we use OCR1A
-    
+
+#ifdef POTSPEED
+    yackpot(); // Read the potentiometer speed right away (if there is one)
+#endif
+
 }
 
 #ifdef POWERSAVE
@@ -475,21 +488,120 @@ void yackspeed (byte dir, byte mode)
 
 
 
+#ifdef POTSPEED
+
+static word potread(void)
+/*!
+ @brief     Measures the voltage on the command button pin with the ADC
+
+ Single conversion, Vcc as reference, ADC clock 1 MHz / 8 = 125 kHz. The ADC is switched
+ on only for the conversion (about 200 us) because it would keep drawing current in sleep mode.
+ The digital input of the pin stays enabled (DIDR0 is not touched) so the command button
+ and the pin change wakeup keep working.
+
+ This is a private function.
+
+ @return    10 bit ADC value, 0 = GND, 1023 = Vcc
+
+ */
+{
+    word v;
+
+    ADMUX  = POTCHAN;                               // Vcc reference, right adjusted, channel
+    ADCSRA = (1<<ADEN) | (1<<ADPS1) | (1<<ADPS0);   // ADC on, prescaler 8
+    ADCSRA |= (1<<ADSC);                             // Start conversion
+    while (ADCSRA & (1<<ADSC));                      // Wait until done
+    v = ADC;
+    ADCSRA = 0;                                      // ADC off again
+
+    return v;
+}
+
+
+
+static void yackpot(void)
+/*!
+ @brief     Hardware speed control
+
+ Called once per heartbeat. Every POTBEATS beats the voltage on the command button pin is
+ measured. A plausible potentiometer voltage is converted to WPM (POTWPMMIN..POTWPMMAX) and
+ remembered in potwpm. On every beat the current speed is forced to potwpm, so a speed
+ change by any other means (paddle, reset command, EEPROM) is overruled immediately.
+
+ Nothing is changed while the command button is pressed, or when the pin sits at Vcc
+ (no potentiometer connected). The speed is not marked dirty, so it is not written to EEPROM.
+
+ This is a private function.
+
+ */
+{
+    static byte cnt  = POTBEATS; // Beat counter. Start value forces a reading at the first call
+    static word last = 0;        // Last accepted ADC reading, 0 = none
+    word        v;
+
+    if (++cnt >= POTBEATS) // Time for a reading?
+    {
+        cnt = 0;
+
+        if (BTNINP & (1<<BTNPIN)) // Only when the command button is not pressed
+        {
+            v = potread();
+
+            if (v >= POTADCNONE) // Pin is pulled up to Vcc: no potentiometer connected
+            {
+                potwpm = 0;
+                last   = 0; // So a reconnected potentiometer is accepted again
+            }
+            else if (v >= POTADCBTN) // Plausible potentiometer voltage
+            {
+                if (((v > last) ? (v - last) : (last - v)) >= POTHYST) // Ignore noise
+                {
+                    last = v;
+
+                    if (v < POTADCMIN) v = POTADCMIN;
+                    if (v > POTADCMAX) v = POTADCMAX;
+
+                    // Linear map to POTWPMMIN..POTWPMMAX, rounded. Fits in 16 bits.
+                    potwpm = POTWPMMIN + ((word)(v - POTADCMIN) * (POTWPMMAX - POTWPMMIN)
+                                          + (POTADCMAX - POTADCMIN) / 2) / (POTADCMAX - POTADCMIN);
+                }
+            }
+            // Otherwise the pin is low (button pressed or bouncing): keep the last value
+        }
+    }
+
+    if (potwpm && (wpm != potwpm)) // Potentiometer overrules everything else
+    {
+        wpm    = potwpm;
+        wpmcnt = WPMCALC(wpm);
+    }
+}
+
+#endif
+
+
+
 void yackbeat (void)
-/*! 
+/*!
  @brief     Heartbeat delay
- 
+
  Several functions in the keyer are timing dependent. The most prominent example is the
  yackiambic function that implements the IAMBIC keyer finite state machine.
- The same expects to be called in intervals of YACKBEAT milliseconds. How this is 
+ The same expects to be called in intervals of YACKBEAT milliseconds. How this is
  implemented is left to the user. In a more complex application this would be done
  using an interrupt or a timer. For simpler cases this is a busy wait routine
  that delays exactly YACKBEAT ms.
- 
+
+ With POTSPEED the potentiometer speed control is handled here too.
+
  */
 {
     while((TIFR & (1<<OCF1A)) == 0); // Wait for Timeout
     TIFR |= (1<<OCF1A);                // Reset output compare flag
+
+#ifdef POTSPEED
+    yackpot(); // Read potentiometer speed control
+#endif
 }
 
 
@@ -1085,7 +1197,7 @@ void yackmessage(byte function, byte msgnr)
 				i = 0;
 			}
 			
-			yackbeat(); // 10 ms heartbeat
+			yackbeat(); // Heartbeat, lasting YACKBEAT milliseconds
 		}	
 		
 		// Extimer has expired. Message has ended
