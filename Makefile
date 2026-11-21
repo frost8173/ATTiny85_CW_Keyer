@@ -283,8 +283,8 @@ AVRDUDE_FLAGS = -p $(ADMCU) -c $(AVRDUDE_PROGRAMMER)
 AVRDUDE_FLAGS += $(AVRDUDE_NO_VERIFY)
 AVRDUDE_FLAGS += $(AVRDUDE_VERBOSE)
 AVRDUDE_FLAGS += $(AVRDUDE_ERASE_COUNTER)
-AVRDUDE_FLAGS += -P /dev/cu.usbserial-A9007MkN
-AVRDUDE_FLAGS += -b 19200
+AVRDUDE_FLAGS += -P /dev/cu.usbserial-A5069RR4
+ AVRDUDE_FLAGS += -b 19200
 
 
 #---------------- Debugging Options ----------------
@@ -379,7 +379,7 @@ ALL_ASFLAGS = -mmcu=$(MCU) -I. -x assembler-with-cpp $(ASFLAGS)
 all: begin gccversion sizebefore build sizeafter end
 
 # Change the build target to build a HEX file or a library.
-build: elf hex eep lss sym extcoff
+build: elf hex eep lss sym #extcoff
 #build: lib
 
 
